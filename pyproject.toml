@@ -1,0 +1,8 @@
+[tool.mypy]
+python_version = 3.11
+warn_unused_configs = true
+warn_unused_ignores = true
+
+[[tool.mypy.overrides]]
+module = "app.models"
+ignore_errors = true
