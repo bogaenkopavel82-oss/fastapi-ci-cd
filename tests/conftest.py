@@ -1,47 +1,72 @@
+"""
+Фикстуры для тестов.
+"""
 import os
-import sys
-from datetime import datetime
 
 import pytest
+from fastapi.testclient import TestClient
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
 
-from app import create_app
-from app.models import Client, ClientParking, Parking
-from app.models import db as _db
+from app.database import get_db
+from app.main import app
+from app.models import Base, Client, Parking
 
-# Добавляем путь к папке hw
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+# Используем файловую БД
+TEST_DATABASE_URL = "sqlite:///./test_parking.db"
 
+# Удаляем старый файл если есть
+if os.path.exists("test_parking.db"):
+    try:
+        os.remove("test_parking.db")
+    except PermissionError:
+        pass
 
-@pytest.fixture
-def app():
-    """Фикстура приложения в тестовом режиме"""
-    app = create_app()
-    app.config["SQLALCHEMY_DATABASE_URI"] = "sqlite:///:memory:"
-    app.config["TESTING"] = True
-    app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
-
-    with app.app_context():
-        _db.create_all()
-        yield app
-        _db.drop_all()
-
-
-@pytest.fixture
-def client(app):
-    """Фикстура тестового клиента"""
-    return app.test_client()
+engine = create_engine(TEST_DATABASE_URL, connect_args={"check_same_thread": False})
+TestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 
-@pytest.fixture
-def db_session(app):
-    """Фикстура сессии БД"""
-    with app.app_context():
-        yield _db
+def override_get_db():
+    """Переопределяем зависимость get_db для тестов."""
+    try:
+        db = TestingSessionLocal()
+        yield db
+    finally:
+        db.close()
 
 
-@pytest.fixture
+app.dependency_overrides[get_db] = override_get_db
+
+
+@pytest.fixture(scope="session", autouse=True)
+def setup_database():
+    """Создает таблицы один раз для всех тестов."""
+    Base.metadata.create_all(bind=engine)
+    yield
+    Base.metadata.drop_all(bind=engine)
+    # Не удаляем файл, чтобы избежать PermissionError
+    # if os.path.exists("test_parking.db"):
+    #     os.remove("test_parking.db")
+
+
+@pytest.fixture(scope="function")
+def db_session():
+    """Фикстура для сессии БД."""
+    db = TestingSessionLocal()
+    yield db
+    db.rollback()
+    db.close()
+
+
+@pytest.fixture(scope="function")
+def client(db_session):
+    """Фикстура для тестового клиента FastAPI."""
+    return TestClient(app)
+
+
+@pytest.fixture(scope="function")
 def test_client(db_session):
-    """Создает тестового клиента в БД"""
+    """Создает тестового клиента в БД."""
     client = Client(
         name="Test",
         surname="User",
@@ -50,12 +75,13 @@ def test_client(db_session):
     )
     db_session.add(client)
     db_session.commit()
+    db_session.refresh(client)
     return client
 
 
-@pytest.fixture
+@pytest.fixture(scope="function")
 def test_parking(db_session):
-    """Создает тестовую парковку в БД"""
+    """Создает тестовую парковку в БД."""
     parking = Parking(
         address="Test Street, 1",
         opened=True,
@@ -64,15 +90,5 @@ def test_parking(db_session):
     )
     db_session.add(parking)
     db_session.commit()
+    db_session.refresh(parking)
     return parking
-
-
-@pytest.fixture
-def test_client_parking(db_session, test_client, test_parking):
-    """Создает тестовую запись о заезде"""
-    client_parking = ClientParking(
-        client_id=test_client.id, parking_id=test_parking.id, time_in=datetime.utcnow()
-    )
-    db_session.add(client_parking)
-    db_session.commit()
-    return client_parking
